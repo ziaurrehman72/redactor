@@ -1,0 +1,28 @@
+# Virtual environments
+.venv/
+.venv-linux/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Generated output (redacted PDFs)
+
+
+# Scratch / editor / OS
+.scratch/
+.vscode/
+.idea/
+.DS_Store
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
+# Test / coverage
+.coverage
+htmlcov/
