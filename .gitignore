@@ -10,7 +10,7 @@ __pycache__/
 .ruff_cache/
 
 # Generated output (redacted PDFs)
-
+output/
 
 # Scratch / editor / OS
 .scratch/
