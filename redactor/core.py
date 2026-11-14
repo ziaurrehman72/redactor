@@ -285,8 +285,12 @@ def verify(dst: Path, plans: list[PageResult], collected: dict[int, str | None])
         stamp = [r + (-2, -2, 2, 2) for r in page.search_for("Collected :")]
         stamp = [r.include_rect(pymupdf.Rect(r.x0, r.y0, 595, r.y1)) for r in stamp]
         for r in plan.rects:
-            if _has_ink(page, r, stamp):
-                problems.append(f"p{plan.page_no}: non-blank pixels in {tuple(round(v) for v in r)}")
+            ink = _ink_bbox(page, r, stamp)
+            if ink:
+                problems.append(
+                    f"p{plan.page_no}: non-blank pixels in {_fmt(r)}; ink at {_fmt(ink)}; "
+                    f"objects there: {_describe(page, ink)}"
+                )
         # no leftover embedded image may carry the original raster data
         for img in page.get_image_info(xrefs=True):
             r = pymupdf.Rect(img["bbox"])
@@ -303,14 +307,59 @@ def verify(dst: Path, plans: list[PageResult], collected: dict[int, str | None])
         raise RedactionError("verification failed:\n    " + "\n    ".join(problems))
 
 
-def _has_ink(page: pymupdf.Page, region: pymupdf.Rect, ignore: list[pymupdf.Rect]) -> bool:
-    dpi = 100
+def _fmt(r: pymupdf.Rect) -> str:
+    return "(" + ", ".join(f"{v:.1f}" for v in r) + ")"
+
+
+def _ink_bbox(page: pymupdf.Page, region: pymupdf.Rect,
+              ignore: list[pymupdf.Rect], dpi: int = 100) -> pymupdf.Rect | None:
+    """Bounding box of non-white pixels that lie *entirely inside* `region`.
+
+    A clip pixmap is rounded out to whole pixels, so its edge pixels may show
+    content just outside the region (a table border, the line above). Those
+    straddling pixels are ignored; only pixels fully inside count. Annotations
+    (the kept watermark) are not rendered. Returns None if the region is clean.
+    """
     pm = page.get_pixmap(clip=region, dpi=dpi, annots=False)
-    k = dpi / 72
+    k, n, w = dpi / 72, pm.n, pm.width
+    data, stride = pm.samples_mv, pm.stride
+    eps = 1e-3
+    ink: pymupdf.Rect | None = None
     for y in range(pm.height):
-        for x in range(pm.width):
-            if min(pm.pixel(x, y)[:3]) < 250:
-                pt = pymupdf.Point(region.x0 + x / k, region.y0 + y / k)
-                if not any(r.contains(pt) for r in ignore):
-                    return True
-    return False
+        row = data[y * stride:y * stride + w * n]
+        if min(row) >= 250:  # whole row white: skip quickly
+            continue
+        y0, y1 = (pm.y + y) / k, (pm.y + y + 1) / k
+        if y0 < region.y0 - eps or y1 > region.y1 + eps:
+            continue  # row straddles the region's top/bottom edge
+        for x in range(w):
+            if min(row[x * n:x * n + min(n, 3)]) >= 250:
+                continue
+            x0, x1 = (pm.x + x) / k, (pm.x + x + 1) / k
+            if x0 < region.x0 - eps or x1 > region.x1 + eps:
+                continue  # column straddles the region's left/right edge
+            cell = pymupdf.Rect(x0, y0, x1, y1)
+            if any(r.intersects(cell) for r in ignore):
+                continue
+            ink = cell if ink is None else ink.include_rect(cell)
+    return ink
+
+
+def _describe(page: pymupdf.Page, area: pymupdf.Rect) -> str:
+    """What the page holds at `area`: kinds, counts and geometry only - never
+    the text itself, so the message is safe to paste into a bug report."""
+    area = area + (-2, -2, 2, 2)
+    parts = []
+    n_text = sum(1 for _, b, _ in text_lines(page) if b.intersects(area))
+    if n_text:
+        parts.append(f"{n_text} text line(s)")
+    for d in page.get_drawings():
+        if d["rect"].intersects(area):
+            parts.append(f"vector {d['type']} {_fmt(d['rect'])} w={d.get('width')}")
+    for i in page.get_image_info(xrefs=True):
+        if pymupdf.Rect(i["bbox"]).intersects(area):
+            parts.append(f"image xref {i['xref']} {_fmt(pymupdf.Rect(i['bbox']))}")
+    for a in page.annots():
+        if a.rect.intersects(area):
+            parts.append(f"annotation {a.type[1]} {_fmt(a.rect)}")
+    return "; ".join(parts) or "nothing found in the page content (rendering artifact?)"
