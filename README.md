@@ -79,14 +79,75 @@ exit code it returns. `python -m redactor` runs the same function through
 | Work on the code (changes take effect immediately) | `pip install -e .` |
 | Add the test tools too | `pip install -e ".[dev]"` |
 | Normal install from the source folder | `pip install .` |
-| Build a package to share | `pip wheel . --no-deps -w dist/` (or `pip install build && python -m build`) |
+| Build a package to share | `python -m build` or `pip wheel . --no-deps -w dist/` (see [Build a `.whl`](#build-a-whl)) |
 | Install that package on another machine | `pip install dist/redactor-0.1.0-py3-none-any.whl` in a venv there; it pulls in `pymupdf` automatically |
 | Run without installing | `pip install pymupdf`, then `python -m redactor report.pdf` from the project root |
 
-The wheel build and a clean-venv install of it were tested; the sample redacted
+Both wheel builds and a clean-venv install of the result were tested; the sample redacted
 correctly with the installed command. To release a new version, change `version`
 in `pyproject.toml` and `__version__` in `redactor/__init__.py` (the two must
 match; `redactor --version` prints the latter).
+
+### Build a `.whl`
+
+A wheel is a single installable file, handy for sharing the tool or installing
+it on another machine without the source. Run this from the project root,
+inside a venv:
+
+```bash
+rm -rf dist build              # clear old artifacts so stale wheels don't pile up
+pip install build
+python -m build                # -> dist/redactor-0.1.0-py3-none-any.whl
+                               #    dist/redactor-0.1.0.tar.gz  (source archive)
+```
+
+If you only want the wheel and no extra tool: `pip wheel . --no-deps -w dist/`
+(this also leaves a `build/` folder behind). Both were tested.
+
+- The wheel is pure Python (`py3-none-any`), so one file works on any OS with
+  Python 3.10+. It declares `pymupdf>=1.25` as a dependency, which pip fetches
+  (PyMuPDF ships its own prebuilt binaries per platform).
+- Install it anywhere with `pip install redactor-0.1.0-py3-none-any.whl` inside
+  a venv, or with `pipx install redactor-0.1.0-py3-none-any.whl`. The `redactor`
+  command is created for you (see above).
+- The file name follows `version` in [pyproject.toml](pyproject.toml); bump it
+  (and `__version__`) before building a new release.
+- `dist/` and `build/` are git-ignored; do not commit built files.
+
+### Install system-wide
+
+To get `redactor` on your PATH outside any project venv, **do not** use
+`sudo pip install`, `pip install --user` or `--break-system-packages`; on
+Debian/Ubuntu they fail with `externally-managed-environment` or can break
+OS-managed Python. Use one of these (both tested):
+
+**pipx** (isolated venv, command on your PATH, current user only):
+
+```bash
+sudo apt install pipx            # macOS: brew install pipx
+pipx ensurepath                  # then open a new shell
+pipx install /path/to/redactor   # the source folder, or a built .whl
+redactor --version
+```
+
+Update with `pipx install --force /path/to/redactor`, remove with
+`pipx uninstall redactor`. Use `pipx install -e` to follow live code changes.
+
+**Dedicated venv + symlink** (works without pipx; available to every user):
+
+```bash
+sudo python3 -m venv /opt/redactor
+sudo /opt/redactor/bin/pip install /path/to/redactor     # no -e: the source may move
+sudo ln -s /opt/redactor/bin/redactor /usr/local/bin/redactor
+```
+
+Remove with `sudo rm /usr/local/bin/redactor && sudo rm -rf /opt/redactor`.
+
+`pipx install --global` also installs for all users, but needs pipx 1.5 or
+newer (Debian/Ubuntu currently ship 1.4, so use the venv method there).
+
+In a dev container the install lasts only until the container is rebuilt; put
+the commands in `.devcontainer/shared/post-create.sh` to make it permanent.
 
 ## Usage
 
