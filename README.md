@@ -340,13 +340,36 @@ extras") in `plan_page`.
 | `already used by ...` | Two inputs map to one output name; use `-r` on the parent folder or rename one |
 | `no PDF files found (use -r to recurse)` | The directory only has PDFs in sub-folders; add `-r` |
 | `warn ... no collection date found` | That page has no `Collected` value, so nothing is stamped on it |
-| `verification failed` | Something that should have been removed is still present; no file is written. Please keep the input and investigate |
+| `verification failed` | The safety check found something that should have been removed; **no file is written**. See [Reading a verification failure](#reading-a-verification-failure) |
+
+### Reading a verification failure
+
+A failed check looks like this:
+
+```
+FAIL  reports/report.pdf: verification failed:
+    p2: non-blank pixels in (152.0, 742.0, 451.0, 780.0); ink at (200.1, 755.0, 260.2, 765.4);
+        objects there: 2 text line(s); vector s (35.0, 780.0, 575.0, 780.0) w=0.5
+```
+
+- **`p2`** - the page; **first box** - the region that was erased;
+  **`ink at`** - where the leftover non-white pixels are (page points from the
+  top-left); **`objects there`** - what the output page contains at that spot
+  (text lines, vector paths, images, annotations: kinds and positions only,
+  never the report's text, so it is safe to paste into an issue).
+- `text survived: '...'` instead means a line that should be gone is still in the
+  text layer. That message **does** quote the text, so redact it before sharing.
+- Only pixels fully inside the erased region count. Content that merely touches
+  its edge (a table border, the row above) does not.
+- Fail-closed is intentional: nothing is written. Keep the input, and if the
+  message points at content that is clearly harmless, report the layout rather
+  than loosening the check.
 
 ## Testing
 
 ```bash
 pip install -e ".[dev]"
-pytest                                   # ~25 s, 113 tests
+pytest                                   # ~15 s, 129 tests
 pytest --cov=redactor --cov-report=term-missing
 ```
 

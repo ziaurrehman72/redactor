@@ -442,3 +442,88 @@ class TestVerify:
         out = tmp_path / "o.pdf"
         redact_report(minimal_report, out)
         core.verify(out, plans, collected)  # no exception
+
+
+# --------------------------------------------------------------------------- #
+# Exact ink detection + diagnostics
+# --------------------------------------------------------------------------- #
+class TestInkDetection:
+    REGION = pymupdf.Rect(150, 742, 453, 780)  # the barcode-sized rect from a real failure
+
+    def _page(self):
+        doc = pymupdf.open()
+        return doc, doc.new_page(width=595, height=841)
+
+    def test_clean_region_has_no_ink(self):
+        _, page = self._page()
+        assert core._ink_bbox(page, self.REGION, []) is None
+
+    def test_ink_inside_is_found_with_accurate_bbox(self):
+        _, page = self._page()
+        page.draw_rect(pymupdf.Rect(200, 755, 260, 765), fill=(0, 0, 0), color=None)
+        ink = core._ink_bbox(page, self.REGION, [])
+        assert ink is not None
+        assert ink.x0 == pytest.approx(200, abs=1.5) and ink.x1 == pytest.approx(260, abs=1.5)
+        assert ink.y0 == pytest.approx(755, abs=1.5) and ink.y1 == pytest.approx(765, abs=1.5)
+
+    @pytest.mark.parametrize("gap", [0.0, 0.15])
+    @pytest.mark.parametrize("side", ["top", "bottom", "left", "right"])
+    def test_ink_just_outside_the_edge_is_not_counted(self, side, gap):
+        """Regression: content exactly abutting the region from outside (a table
+        border or the text line above/below) used to be reported as ink inside
+        it, because the clip pixmap is rounded out to whole pixels. The old
+        check failed this test at gap=0.0 for top/bottom/left/right."""
+        _, page = self._page()
+        r = self.REGION
+        outside = {
+            "top": pymupdf.Rect(r.x0 - 20, r.y0 - 6, r.x1 + 20, r.y0 - gap),
+            "bottom": pymupdf.Rect(r.x0 - 20, r.y1 + gap, r.x1 + 20, r.y1 + 6),
+            "left": pymupdf.Rect(r.x0 - 6, r.y0 - 20, r.x0 - gap, r.y1 + 20),
+            "right": pymupdf.Rect(r.x1 + gap, r.y0 - 20, r.x1 + 6, r.y1 + 20),
+        }[side]
+        page.draw_rect(outside, fill=(0, 0, 0), color=None)
+        assert core._ink_bbox(page, r, []) is None
+
+    def test_ink_well_inside_near_an_edge_is_still_found(self):
+        _, page = self._page()
+        page.draw_rect(pymupdf.Rect(300, 743.5, 320, 748), fill=(0, 0, 0), color=None)
+        assert core._ink_bbox(page, self.REGION, []) is not None
+
+    def test_ignored_areas_are_skipped(self):
+        _, page = self._page()
+        page.draw_rect(pymupdf.Rect(200, 755, 260, 765), fill=(0, 0, 0), color=None)
+        assert core._ink_bbox(page, self.REGION, [pymupdf.Rect(190, 750, 270, 770)]) is None
+
+    def test_annotations_are_not_counted(self):
+        _, page = self._page()
+        page.add_freetext_annot(pymupdf.Rect(200, 750, 300, 770), "watermark", fontsize=12)
+        assert core._ink_bbox(page, self.REGION, []) is None
+
+    def test_describe_reports_kinds_and_geometry_but_not_text(self):
+        _, page = self._page()
+        page.insert_text((200, 760), "SECRET-PATIENT-NAME", fontsize=10)
+        page.draw_rect(pymupdf.Rect(190, 750, 300, 765), color=(0, 0, 0))
+        text = core._describe(page, pymupdf.Rect(195, 752, 260, 764))
+        assert "text line(s)" in text and "vector" in text
+        assert "SECRET" not in text
+
+    def test_describe_when_nothing_is_there(self):
+        _, page = self._page()
+        assert "rendering artifact" in core._describe(page, pymupdf.Rect(10, 10, 20, 20))
+
+    def test_verify_error_names_the_ink_location_without_leaking_text(self, minimal_report, tmp_path):
+        with pymupdf.open(minimal_report) as d:
+            plans = [core.plan_page(p) for p in d]
+            collected = {p.number: core.find_collected_datetime(p) for p in d}
+        out = tmp_path / "o.pdf"
+        redact_report(minimal_report, out)
+        with pymupdf.open(out) as d:
+            d[0].insert_text((100, 130), "PATIENT-SECRET-123", fontsize=10)  # inside the header rect
+            dirty = tmp_path / "dirty.pdf"
+            d.save(dirty)
+        with pytest.raises(RedactionError) as e:
+            core.verify(dirty, plans, collected)
+        msg = str(e.value)
+        assert "non-blank pixels in" in msg and "ink at (" in msg and "objects there:" in msg
+        assert "text line(s)" in msg
+        assert "PATIENT-SECRET-123" not in msg
